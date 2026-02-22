@@ -1,6 +1,6 @@
 const Message = require("../models/Message")
 const Chat = require("../models/Chat")
-const { NotFoundError, ForbiddenError } = require("../utils/customError")
+const { NotFoundError, ForbiddenError, ValidationError } = require("../utils/customError")
 const { getIo } = require("../sockets/socket")
 
 // Send message
@@ -11,12 +11,18 @@ exports.sendMessage = async (req, res) => {
   const chat = await Chat.findById(chatId)
   if (!chat) throw new NotFoundError("Chat not found")
 
-  // Security: only members can send
-  if (!chat.members.includes(myId)) {
-    throw new ForbiddenError("Not your chat")
+  // Security: check permission to send
+  if (chat.type === "channel") {
+    if (chat.admin.toString() !== myId) {
+      throw new ForbiddenError("Only admin can post in channel")
+    }
+  } else {
+    if (!chat.members.includes(myId)) {
+      throw new ForbiddenError("Not your chat")
+    }
   }
 
-  let attachment = null;
+  let attachment = null
   if (req.file) {
     attachment = {
       filename: req.file.filename,
@@ -24,7 +30,7 @@ exports.sendMessage = async (req, res) => {
       mimetype: req.file.mimetype,
       size: req.file.size,
       url: `/uploads/${req.file.filename}`
-    };
+    }
   }
 
   const message = await Message.create({
@@ -41,7 +47,7 @@ exports.sendMessage = async (req, res) => {
 
   // Emit the message to all members in the chat room
   const io = getIo()
-  io.to(chatId).emit('newMessage', message)
+  io.to(chatId.toString()).emit('newMessage', message)
 
   res.status(201).json(message)
 }
@@ -54,16 +60,24 @@ exports.getMessages = async (req, res) => {
   const chat = await Chat.findById(chatId)
   if (!chat) throw new NotFoundError("Chat not found")
 
-  if (!chat.members.includes(myId)) {
-    throw new ForbiddenError("Not your chat")
+  // Security: check permission to view
+  if (chat.type === "channel") {
+    if (!chat.subscribers.includes(myId) && chat.admin?.toString() !== myId) {
+      throw new ForbiddenError("Not subscribed to channel")
+    }
+  } else {
+    if (!chat.members.includes(myId)) {
+      throw new ForbiddenError("Not your chat")
+    }
   }
 
-  const messages = await Message.find({ chatId })
+  const messages = await Message.find({ chatId, deleted: false })
     .populate("senderId", "username email")
     .sort({ createdAt: 1 })
 
   res.json(messages)
 }
+
 // Mark messages as seen
 exports.markSeen = async (req, res) => {
   const myId = req.user.id
@@ -85,6 +99,7 @@ exports.editMessage = async (req, res) => {
 
   const message = await Message.findById(messageId)
   if (!message) throw new NotFoundError("Message not found")
+  if (message.deleted) throw new NotFoundError("Message deleted")
 
   if (message.senderId.toString() !== myId) {
     throw new ForbiddenError("Can only edit your own messages")
@@ -111,11 +126,26 @@ exports.deleteMessage = async (req, res) => {
   const message = await Message.findById(messageId)
   if (!message) throw new NotFoundError("Message not found")
 
-  if (message.senderId.toString() !== myId) {
-    throw new ForbiddenError("Can only delete your own messages")
+  const chat = await Chat.findById(message.chatId)
+  if (!chat) throw new NotFoundError("Chat not found")
+
+  const isAdmin = chat.admin && chat.admin.toString() === myId
+  const isOwn = message.senderId.toString() === myId
+
+  if (!isOwn && !isAdmin) {
+    throw new ForbiddenError("Can only delete your own messages or as admin")
   }
 
-  await Message.findByIdAndDelete(messageId)
+  // Optional time limit for non-admins
+  if (!isAdmin) {
+    const timeDiff = (new Date() - message.createdAt) / (1000 * 60 * 60)
+    if (timeDiff > 48) {
+      throw new ForbiddenError("Delete time limit exceeded (48 hours)")
+    }
+  }
+
+  message.deleted = true
+  await message.save()
 
   const io = getIo()
   io.to(message.chatId.toString()).emit('messageDeleted', messageId)
@@ -131,6 +161,7 @@ exports.addReaction = async (req, res) => {
 
   const message = await Message.findById(messageId)
   if (!message) throw new NotFoundError("Message not found")
+  if (message.deleted) throw new NotFoundError("Message deleted")
 
   // Check if user already reacted with this emoji
   const existingReaction = message.reactions.find(r =>
@@ -165,10 +196,17 @@ exports.replyToMessage = async (req, res) => {
 
   const originalMessage = await Message.findById(messageId)
   if (!originalMessage) throw new NotFoundError("Message not found")
+  if (originalMessage.deleted) throw new NotFoundError("Message deleted")
 
   const chat = await Chat.findById(originalMessage.chatId)
-  if (!chat.members.includes(myId)) {
-    throw new ForbiddenError("Not your chat")
+  if (chat.type === "channel") {
+    if (chat.admin.toString() !== myId) {
+      throw new ForbiddenError("Only admin can post in channel")
+    }
+  } else {
+    if (!chat.members.includes(myId)) {
+      throw new ForbiddenError("Not your chat")
+    }
   }
 
   const message = await Message.create({
@@ -195,7 +233,8 @@ exports.replyToMessage = async (req, res) => {
 // Search messages
 exports.searchMessages = async (req, res) => {
   const myId = req.user.id
-  const { chatId, query } = req.query
+  const { chatId } = req.params
+  const { query } = req.query
 
   if (!query) {
     return res.json([])
@@ -204,17 +243,76 @@ exports.searchMessages = async (req, res) => {
   const chat = await Chat.findById(chatId)
   if (!chat) throw new NotFoundError("Chat not found")
 
-  if (!chat.members.includes(myId)) {
-    throw new ForbiddenError("Not your chat")
+  if (chat.type === "channel") {
+    if (!chat.subscribers.includes(myId) && chat.admin?.toString() !== myId) {
+      throw new ForbiddenError("Not subscribed to channel")
+    }
+  } else {
+    if (!chat.members.includes(myId)) {
+      throw new ForbiddenError("Not your chat")
+    }
   }
 
   const messages = await Message.find({
     chatId,
-    text: { $regex: query, $options: 'i' }
+    text: { $regex: query, $options: 'i' },
+    deleted: false
   })
   .populate("senderId", "username email")
   .sort({ createdAt: -1 })
   .limit(50)
 
   res.json(messages)
+}
+
+// Forward message
+exports.forwardMessage = async (req, res) => {
+  const myId = req.user.id
+  const { messageId } = req.params
+  const { targetChatId } = req.body
+
+  const original = await Message.findById(messageId)
+  if (!original) throw new NotFoundError("Message not found")
+  if (original.deleted) throw new NotFoundError("Message deleted")
+
+  // Check access to original chat
+  const originalChat = await Chat.findById(original.chatId)
+  if (!originalChat) throw new NotFoundError("Original chat not found")
+
+  let hasAccess = false
+  if (originalChat.type === "channel") {
+    hasAccess = originalChat.subscribers.includes(myId) || originalChat.admin?.toString() === myId
+  } else {
+    hasAccess = originalChat.members.includes(myId)
+  }
+  if (!hasAccess) throw new ForbiddenError("No access to original message")
+
+  // Check send permission in target
+  const targetChat = await Chat.findById(targetChatId)
+  if (!targetChat) throw new NotFoundError("Target chat not found")
+
+  let canSend = false
+  if (targetChat.type === "channel") {
+    canSend = targetChat.admin.toString() === myId
+  } else {
+    canSend = targetChat.members.includes(myId)
+  }
+  if (!canSend) throw new ForbiddenError("Cannot send to target chat")
+
+  const forwarded = await Message.create({
+    chatId: targetChatId,
+    senderId: myId,
+    type: original.type,
+    text: original.text,
+    attachment: original.attachment,
+    forwardedFrom: messageId,
+    seenBy: [myId]
+  })
+
+  await forwarded.populate("senderId", "username email")
+
+  const io = getIo()
+  io.to(targetChatId.toString()).emit('newMessage', forwarded)
+
+  res.status(201).json(forwarded)
 }

@@ -3,10 +3,13 @@ const mongoose = require("mongoose")
 const chatSchema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ["private", "group"],
+    enum: ["private", "group", "channel"],
     default: "private"
   },
   name: {
+    type: String
+  },
+  description: {
     type: String
   },
   admin: {
@@ -16,6 +19,14 @@ const chatSchema = new mongoose.Schema({
   members: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: "User"
+  }],
+  subscribers: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+  }],
+  pinnedMessages: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Message"
   }]
 }, { timestamps: true })
 

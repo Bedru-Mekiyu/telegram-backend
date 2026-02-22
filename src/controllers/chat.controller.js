@@ -1,5 +1,6 @@
 const Chat = require("../models/Chat")
 const { ValidationError, NotFoundError, ForbiddenError } = require("../utils/customError")
+const { getIo } = require("../sockets/socket")
 
 // Create private chat
 exports.createPrivateChat = async (req, res) => {
@@ -27,13 +28,50 @@ exports.createPrivateChat = async (req, res) => {
   res.status(201).json(chat)
 }
 
+// Create channel
+exports.createChannel = async (req, res) => {
+  const myId = req.user.id
+  const { name, description } = req.body
+
+  const chat = await Chat.create({
+    type: "channel",
+    name,
+    description,
+    admin: myId,
+    members: [myId],
+    subscribers: [myId]
+  })
+
+  res.status(201).json(chat)
+}
+
+// Subscribe to channel
+exports.subscribe = async (req, res) => {
+  const myId = req.user.id
+  const { chatId } = req.body
+
+  const chat = await Chat.findById(chatId)
+  if (!chat) throw new NotFoundError("Channel not found")
+  if (chat.type !== "channel") throw new ValidationError("Not a channel")
+
+  if (!chat.subscribers.includes(myId)) {
+    chat.subscribers.push(myId)
+    await chat.save()
+  }
+
+  res.json(chat)
+}
+
 // List my chats
 exports.getMyChats = async (req, res) => {
   const myId = req.user.id
 
   const chats = await Chat.find({
-    members: myId
-  }).populate("members", "username email")
+    $or: [
+      { members: myId },
+      { subscribers: myId }
+    ]
+  }).populate("members", "username email").populate("subscribers", "username email")
 
   res.json(chats)
 }
@@ -102,6 +140,48 @@ exports.renameGroup = async (req, res) => {
 
   chat.name = name
   await chat.save()
+
+  res.json(chat)
+}
+
+// Pin message
+exports.pinMessage = async (req, res) => {
+  const myId = req.user.id
+  const { chatId, messageId } = req.body
+
+  const chat = await Chat.findById(chatId)
+  if (!chat) throw new NotFoundError("Chat not found")
+
+  if (chat.admin?.toString() !== myId)
+    throw new ForbiddenError("Only admin can pin")
+
+  if (!chat.pinnedMessages.includes(messageId)) {
+    chat.pinnedMessages.push(messageId)
+    await chat.save()
+  }
+
+  const io = getIo()
+  io.to(chatId.toString()).emit("messagePinned", messageId)
+
+  res.json(chat)
+}
+
+// Unpin message
+exports.unpinMessage = async (req, res) => {
+  const myId = req.user.id
+  const { chatId, messageId } = req.body
+
+  const chat = await Chat.findById(chatId)
+  if (!chat) throw new NotFoundError("Chat not found")
+
+  if (chat.admin?.toString() !== myId)
+    throw new ForbiddenError("Only admin can unpin")
+
+  chat.pinnedMessages = chat.pinnedMessages.filter(id => id.toString() !== messageId)
+  await chat.save()
+
+  const io = getIo()
+  io.to(chatId.toString()).emit("messageUnpinned", messageId)
 
   res.json(chat)
 }

@@ -35,6 +35,10 @@ const messageSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Message"
   },
+  forwardedFrom: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Message"
+  },
   reactions: [{
     emoji: String,
     userId: {
@@ -46,7 +50,11 @@ const messageSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  editedAt: Date
+  editedAt: Date,
+  deleted: {
+    type: Boolean,
+    default: false
+  }
 }, { timestamps: true })
 
 module.exports = mongoose.model("Message", messageSchema)

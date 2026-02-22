@@ -1,6 +1,6 @@
 const router = require("express").Router()
 const auth = require("../middlewares/auth.middleware")
-const { sendMessage, getMessages, markSeen, editMessage, deleteMessage, addReaction, replyToMessage, searchMessages } = require("../controllers/message.controller")
+const { sendMessage, getMessages, markSeen, editMessage, deleteMessage, addReaction, replyToMessage, searchMessages, forwardMessage } = require("../controllers/message.controller")
 const multer = require("multer")
 const path = require("path")
 
@@ -22,7 +22,7 @@ const upload = multer({
   },
   fileFilter: (req, file, cb) => {
     // Allow images, videos, audio, and documents
-    const allowedTypes = /jpeg|jpg|png|gif|mp4|avi|mov|mp3|wav|pdf|doc|docx|txt/
+    const allowedTypes = /jpeg|jpg|png|gif|mp4|avi|mov|mp3|wav|ogg|m4a|aac|pdf|doc|docx|txt/
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase())
     const mimetype = allowedTypes.test(file.mimetype)
 
@@ -42,7 +42,7 @@ router.put("/:messageId", auth, editMessage)
 router.delete("/:messageId", auth, deleteMessage)
 router.post("/:messageId/reaction", auth, addReaction)
 router.post("/:messageId/reply", auth, replyToMessage)
+router.post("/:messageId/forward", auth, forwardMessage)
 router.get("/search/:chatId", auth, searchMessages)
-
 
 module.exports = router
