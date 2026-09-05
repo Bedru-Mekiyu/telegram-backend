@@ -2,3 +2,7 @@
 node_modules
 .qodo
 .vscode
+uploads/*
+!uploads/.gitkeep
+!uploads/avatars/
+!uploads/avatars/.gitkeep
